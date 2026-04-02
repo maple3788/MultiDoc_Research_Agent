@@ -1,7 +1,5 @@
 """
-LangGraph workflow: Plan -> Retrieve (per document) -> Synthesize.
-
-Retrieval uses the mock `retrieve_document_chunks` tool. Swap synthesis for an LLM call when ready.
+LangGraph workflow: structured LLM plan -> FAISS retrieval per step -> LLM synthesis (LCEL).
 """
 
 from __future__ import annotations
@@ -9,83 +7,126 @@ from __future__ import annotations
 import operator
 from typing import Annotated, NotRequired, TypedDict
 
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts import ChatPromptTemplate
 from langgraph.graph import END, StateGraph
+from pydantic import BaseModel, Field
 
+from agent.llm import get_chat_llm
 from tools.retriever_tool import retrieve_document_chunks
+
+# --- Structured planning ---
+
+
+class RetrievalStep(BaseModel):
+    """One retrieval call against a single indexed document."""
+
+    target_doc: str = Field(
+        description="Document id: company_a_q3 or company_b_q3 (must match vector_stores/)."
+    )
+    search_query: str = Field(
+        description="Short, focused query for semantic search in that document only."
+    )
+
+
+class ResearchPlan(BaseModel):
+    """Planner output: ordered retrieval steps for the user's question."""
+
+    steps: list[RetrievalStep] = Field(
+        description="Steps to gather evidence; typically one or more per company/report."
+    )
+
+
+PLAN_PROMPT = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            """You are a research planner for multi-document Q&A.
+Available indexed document ids (use these exact strings):
+- company_a_q3 — Company A Q3 FY2026 report
+- company_b_q3 — Company B Q3 FY2026 report
+
+Decompose the user's question into retrieval steps. Each step targets ONE document with a
+specific search_query tailored for vector retrieval (metrics, regions, margins, growth, etc.).
+Prefer separate steps per company when comparing. Output valid structured data only.""",
+        ),
+        ("human", "{question}"),
+    ]
+)
+
+
+SYNTH_PROMPT = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            """You are a financial analyst writing for an executive audience.
+Using ONLY the retrieved context below, write a detailed, professional comparative report in Markdown.
+Include: executive summary, side-by-side metrics where possible, and brief commentary on trends.
+If some information is missing from the context, say so explicitly. Do not invent figures.""",
+        ),
+        (
+            "human",
+            """User question:
+{question}
+
+Retrieved context (from indexed reports):
+{context}
+""",
+        ),
+    ]
+)
+
+
+def _plan_chain():
+    llm = get_chat_llm(temperature=0)
+    structured = llm.with_structured_output(ResearchPlan)
+    return PLAN_PROMPT | structured
+
+
+def _synth_chain():
+    llm = get_chat_llm(temperature=0.25)
+    return SYNTH_PROMPT | llm | StrOutputParser()
+
+
+def _format_context(retrieved: list[tuple[str, str]]) -> str:
+    blocks = []
+    for doc_id, text in retrieved:
+        blocks.append(f"#### {doc_id}\n{text}")
+    return "\n\n".join(blocks) if blocks else "(No chunks retrieved.)"
 
 
 class GraphState(TypedDict):
-    """Shared state for the multi-document research graph."""
-
     query: str
-    plan: str
-    targets: list[str]
+    plan_steps: list[dict[str, str]]
     retrieved: Annotated[list[tuple[str, str]], operator.add]
     report: NotRequired[str]
 
 
 def _plan_node(state: GraphState) -> dict:
-    """
-    Break down the comparative question into retrieval targets.
-
-    Placeholder logic: map known comparative phrasing to mock document ids.
-    Replace with an LLM planner for open-ended questions.
-    """
-    q = state["query"].lower()
-    if "company a" in q and "company b" in q:
-        targets = ["company_a_q3", "company_b_q3"]
-        plan = (
-            "Steps: (1) Fetch Q3 financial context for Company A and Company B. "
-            "(2) Align metrics (revenue, margin, narrative). (3) Produce a concise comparison."
-        )
-    else:
-        targets = ["company_a_q3", "company_b_q3"]
-        plan = "Default plan: retrieve both default corpora and synthesize a comparison."
-
-    return {"plan": plan, "targets": targets}
+    chain = _plan_chain()
+    plan: ResearchPlan = chain.invoke({"question": state["query"]})
+    steps = [s.model_dump() for s in plan.steps]
+    return {"plan_steps": steps}
 
 
 def _action_node(state: GraphState) -> dict:
-    """Call the retriever tool once per target document."""
     retrieved: list[tuple[str, str]] = []
-    q = state["query"]
-    for doc_id in state["targets"]:
-        payload = retrieve_document_chunks.invoke({"query": q, "document_id": doc_id})
+    for step in state["plan_steps"]:
+        doc_id = step["target_doc"]
+        sq = step["search_query"]
+        payload = retrieve_document_chunks.invoke({"query": sq, "document_id": doc_id})
         retrieved.append((doc_id, payload))
     return {"retrieved": retrieved}
 
 
 def _synthesis_node(state: GraphState) -> dict:
-    """Combine retrieved chunks into a structured report (placeholder, no LLM)."""
-    lines = [
-        "# Comparative research report",
-        "",
-        f"**Original question:** {state['query']}",
-        "",
-        "## Plan",
-        state["plan"],
-        "",
-        "## Retrieved context",
-    ]
-    for doc_id, text in state["retrieved"]:
-        lines.append(f"### {doc_id}")
-        lines.append(text)
-        lines.append("")
-
-    lines.extend(
-        [
-            "## Synthesis (placeholder)",
-            "Side-by-side: Company A reported higher absolute revenue in Q3; Company B showed stronger YoY revenue growth. "
-            "Margins were higher for Company A; Company B emphasized regional expansion. "
-            "Replace this section with an LLM that cites the chunks above.",
-        ]
-    )
-    report = "\n".join(lines)
+    chain = _synth_chain()
+    context = _format_context(state["retrieved"])
+    report = chain.invoke({"question": state["query"], "context": context})
     return {"report": report}
 
 
 def build_graph():
-    """Compile the LangGraph state machine."""
     g = StateGraph(GraphState)
     g.add_node("plan", _plan_node)
     g.add_node("retrieve", _action_node)
@@ -100,12 +141,10 @@ def build_graph():
 
 
 def run_agent(query: str) -> GraphState:
-    """Run the graph end-to-end."""
     graph = build_graph()
     initial: GraphState = {
         "query": query,
-        "plan": "",
-        "targets": [],
+        "plan_steps": [],
         "retrieved": [],
     }
     return graph.invoke(initial)

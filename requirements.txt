@@ -1,14 +1,20 @@
 # Core agent orchestration
 langchain>=0.3.14
 langchain-core>=0.3.14
+langchain-community>=0.3.14
+langchain-ollama>=0.2.0
+langchain-text-splitters>=0.3.4
 langchain-openai>=0.2.14
 langgraph>=0.2.55
 
-# Embeddings / vector store (reserved for future RAG; not wired in scaffold)
+# Embeddings / vector store
 faiss-cpu>=1.8.0
 
-# LLM client
+# LLM client (optional; primary path is Ollama via langchain-community)
 openai>=1.59.0
 
 # Config
 python-dotenv>=1.0.1
+
+# Structured plans / schemas
+pydantic>=2.0.0

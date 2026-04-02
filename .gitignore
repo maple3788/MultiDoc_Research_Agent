@@ -29,3 +29,6 @@ htmlcov/
 dist/
 build/
 *.egg-info/
+
+# Generated indexes (run `python ingest.py`)
+vector_stores/
