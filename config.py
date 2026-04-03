@@ -28,6 +28,19 @@ CATALOG_MIN_VECTORS_IVFPQ = int(os.environ.get("CATALOG_MIN_VECTORS_IVFPQ", "256
 # Agent routing: query embedding → summary FAISS → document ids (see ``catalog/routing.py``).
 CATALOG_ROUTE_TOP_K = int(os.environ.get("CATALOG_ROUTE_TOP_K", "5"))
 CATALOG_ROUTE_OVERFETCH = int(os.environ.get("CATALOG_ROUTE_OVERFETCH", "48"))
-# Optional max L2 distance from summary search; empty = no cutoff (use if unrelated docs rank too high).
+# Hard ceiling per document: drop hits with L2 above this (empty = no per-doc ceiling).
 _CATALOG_ROUTE_MAX_L2_RAW = os.environ.get("CATALOG_ROUTE_MAX_L2", "").strip()
 CATALOG_ROUTE_MAX_L2: float | None = float(_CATALOG_ROUTE_MAX_L2_RAW) if _CATALOG_ROUTE_MAX_L2_RAW else None
+# If the *best* summary match is weaker than this L2, treat the query as unrelated → no documents (empty route).
+_CATALOG_ROUTE_MAX_BEST_L2_RAW = os.environ.get("CATALOG_ROUTE_MAX_BEST_L2", "").strip()
+CATALOG_ROUTE_MAX_BEST_L2: float | None = (
+    float(_CATALOG_ROUTE_MAX_BEST_L2_RAW) if _CATALOG_ROUTE_MAX_BEST_L2_RAW else None
+)
+# Keep only documents with L2 <= best_L2 + margin (drops weak runner-ups). Set to 999 or similar to disable effectively.
+_CATALOG_ROUTE_L2_MARGIN_RAW = os.environ.get("CATALOG_ROUTE_L2_MARGIN", "0.22").strip()
+CATALOG_ROUTE_L2_MARGIN: float | None = (
+    float(_CATALOG_ROUTE_L2_MARGIN_RAW) if _CATALOG_ROUTE_L2_MARGIN_RAW else None
+)
+
+# Per-document chunk retrieval for synthesis (``tools/retriever_tool``). Higher = more context for books/long docs.
+CHUNK_TOP_K = max(1, int(os.environ.get("CHUNK_TOP_K", "8")))

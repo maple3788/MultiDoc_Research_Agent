@@ -12,11 +12,10 @@ from langchain_community.vectorstores import FAISS
 from langchain_core.tools import tool
 
 from agent.llm import get_embeddings
+from config import CHUNK_TOP_K
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 VECTOR_ROOT = PROJECT_ROOT / "vector_stores"
-
-TOP_K = 3
 
 
 @lru_cache(maxsize=16)
@@ -25,7 +24,7 @@ def _load_faiss(document_id: str) -> FAISS:
     index_faiss = folder / "index.faiss"
     if not index_faiss.is_file():
         raise FileNotFoundError(
-            f"No FAISS index at {folder}. Run `python ingest.py` to build vector_stores."
+            f"No FAISS index at {folder}. Upload a document or rebuild chunk indexes."
         )
     embeddings = get_embeddings()
     return FAISS.load_local(
@@ -35,8 +34,10 @@ def _load_faiss(document_id: str) -> FAISS:
     )
 
 
-def retrieve_from_faiss(document_id: str, query: str, k: int = TOP_K) -> str:
+def retrieve_from_faiss(document_id: str, query: str, k: int | None = None) -> str:
     """Load the store for ``document_id`` and return the top-k chunk texts."""
+    if k is None:
+        k = CHUNK_TOP_K
     store = _load_faiss(document_id)
     pairs = store.similarity_search_with_score(query.strip(), k=k)
     lines: list[str] = [f"[document_id={document_id}]"]
@@ -53,12 +54,12 @@ def retrieve_document_chunks(query: str, document_id: str) -> str:
 
     Args:
         query: What to search for in this document (focused retrieval query).
-        document_id: Index name under vector_stores/, e.g. company_a_q3 or company_b_q3.
+        document_id: UUID string folder name under vector_stores/.
 
     Returns:
-        Top-3 chunks as a single string for downstream synthesis.
+        Top-K chunks (``CHUNK_TOP_K`` in config) for downstream synthesis.
     """
-    return retrieve_from_faiss(document_id.strip(), query.strip(), k=TOP_K)
+    return retrieve_from_faiss(document_id.strip(), query.strip(), k=CHUNK_TOP_K)
 
 
 def get_tools() -> list[Any]:

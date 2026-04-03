@@ -25,11 +25,11 @@ def list_chunk_indexed_ids() -> list[str]:
 def planner_doc_catalog_text() -> str:
     """
     Human-readable bullet list: id — filename when known (PostgreSQL).
-    Non-UUID demo ids (e.g. company_a_q3) show as demo corpus.
+    Non-UUID folder names (legacy local ids) show the raw id.
     """
     ids = list_chunk_indexed_ids()
     if not ids:
-        return "(No chunk indexes yet. Upload text files or run `python ingest.py` for demo data.)"
+        return "(No chunk indexes yet. Upload documents in the **Upload** page.)"
 
     lines: list[str] = []
     session = SessionLocal()
@@ -42,7 +42,7 @@ def planner_doc_catalog_text() -> str:
                 if row is not None:
                     label = f"{did} — {row.original_filename}"
             except ValueError:
-                label = f"{did} — (demo corpus)"
+                label = f"{did} — (non-UUID index)"
             lines.append(f"- {label}")
     finally:
         session.close()

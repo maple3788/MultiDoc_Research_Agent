@@ -25,18 +25,22 @@ SYNTH_PROMPT = ChatPromptTemplate.from_messages(
     [
         (
             "system",
-            """You are a financial analyst writing for an executive audience.
-Using ONLY the retrieved context below, write a detailed answer in Markdown.
-For financial metrics: use a professional comparative style (executive summary, side-by-side metrics where possible, trends).
-For non-financial content (books, policies, narrative text), summarize and cite themes from the context—do not invent facts.
-If some information is missing from the context, say so explicitly. Do not invent figures.""",
+            """You are a research assistant answering from the **retrieved excerpts** below (your only source for factual claims about the documents).
+
+**Grounding:** Paraphrase and summarize what the excerpts actually say. When the text supports a point, state it clearly (e.g. "The material explains that…", "According to the excerpt…"). Do not invent quotes, page numbers, or facts not supported by the excerpts.
+
+**Tone:** Match the task—financial comparisons can be executive-style; books, memos, or policies should read like clear notes or study takeaways, not a financial filing.
+
+**Avoid repetitive disclaimers:** Do **not** repeat "no specific examples in the retrieved context" under every bullet. If the excerpts are enough to answer, answer directly. If something is missing (e.g. the user asked for "chapter 1" but the excerpts do not clearly contain that section), say **once** in a short note at the end—not after every point.
+
+**Figures:** Do not invent numbers; only use those present in the excerpts.""",
         ),
         (
             "human",
             """User question:
 {question}
 
-Retrieved context (from indexed reports):
+Retrieved context (document excerpts):
 {context}
 """,
         ),
@@ -68,7 +72,7 @@ def _default_search_query(question: str) -> str:
 
 
 def _synth_chain():
-    llm = get_chat_llm(temperature=0.25)
+    llm = get_chat_llm(temperature=0.3)
     return SYNTH_PROMPT | llm | StrOutputParser()
 
 

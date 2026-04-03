@@ -1,14 +1,14 @@
 # Multi-Document Research Agent
 
-RAG-style app: **document summaries** and **per-document chunk indexes** back a **LangGraph** agent. Queries are **routed** by embedding against the summary index (`catalog_store/`), then **chunks** are fetched from `vector_stores/<document_id>/`, and an **LLM** (Ollama) synthesizes the answer. **Streamlit** (`app.py`) provides the UI; **PostgreSQL** stores upload metadata and summaries.
+RAG-style app: **document summaries** and **per-document chunk indexes** back a **LangGraph** agent. Queries are **routed** by embedding against the summary index (`catalog_store/`): only documents **close enough** to the best summary match are used (see **`CATALOG_ROUTE_L2_MARGIN`** and optional **`CATALOG_ROUTE_MAX_BEST_L2`** in `.env`). Then **chunks** are fetched from those docs (up to **`CATALOG_ROUTE_TOP_K`**). Use **Ollama** or **Gemini** for chat (see `.env.example`). **Embeddings** stay on **Ollama** so vectors remain consistent. **Streamlit** (`app.py`) provides the UI; **PostgreSQL** stores upload metadata and summaries.
 
 ## Pipeline (overview)
 
 ```mermaid
 flowchart TB
-  subgraph ingest["Indexing (upload or python ingest.py)"]
+  subgraph ingest["Indexing (upload)"]
     direction TB
-    U[File bytes / demo text] --> TXT[Extract text PDF or UTF-8]
+    U[File bytes] --> TXT[Extract text PDF or UTF-8]
     TXT --> SUM[LLM: document summary]
     SUM --> DB[(PostgreSQL: documents + summaries)]
     TXT --> CH[Split into chunks + embed]
@@ -20,7 +20,7 @@ flowchart TB
   subgraph runtime["Query time (LangGraph)"]
     direction TB
     Q[User question] --> ROUTE[route: embed query]
-    ROUTE --> SC[search_catalog: nearest summaries]
+    ROUTE --> SC["search_catalog + relevance filter"]
     SC --> F["Filter to ids with chunk index"]
     F --> RET[retrieve: top chunks per doc]
     RET --> VS
@@ -32,7 +32,7 @@ flowchart TB
   CAT -.->|"summary vectors"| SC
 ```
 
-**Flow in words:** ingest builds **two** vector layers—**one embedding per document** (from the LLM summary, written to `catalog_store/`) and **many embeddings per document** (chunks in `vector_stores/<id>/`). At question time, the query embedding selects **which documents** matter (summary search), then the **same** query embedding runs **inside each chosen document’s** chunk index to pull evidence for synthesis.
+**Flow in words:** each upload gets **one embedding per document** (LLM summary → `catalog_store/`) and **many embeddings per document** (chunks → `vector_stores/<id>/`). At query time, summary search picks the **closest** document(s); chunk search then pulls evidence from those docs only.
 
 ## LangGraph shape
 
@@ -47,9 +47,9 @@ flowchart LR
 
 | Path | Contents |
 |------|----------|
-| **`catalog_store/catalog.faiss`** | FAISS index over **document-level** embedding vectors (summaries; demo docs use a text snippet). |
-| **`catalog_store/uuids.json`** | Maps FAISS row index → `document_id` string (UUID or e.g. `company_a_q3`). |
-| **`vector_stores/<document_id>/`** | Per-document **chunk** FAISS (`index.faiss`) + LangChain docstore (`index.pkl`) with chunk text. |
+| **`catalog_store/catalog.faiss`** | FAISS index over **document-level** embedding vectors (LLM summaries). |
+| **`catalog_store/uuids.json`** | Maps FAISS row index → PostgreSQL **document UUID**. |
+| **`vector_stores/<document_id>/`** | Per-document **chunk** FAISS (`index.faiss`) + LangChain docstore (`index.pkl`). |
 | **`uploads/`** | Original uploaded files. |
 | **PostgreSQL** | `documents` table: id, filename, `summary`, status, paths. |
 
@@ -60,7 +60,7 @@ cd MultiDoc_Research_Agent
 python -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-cp .env.example .env        # set DATABASE_URL, Ollama models
+cp .env.example .env        # set DATABASE_URL, Ollama and/or Gemini
 ```
 
 Start Postgres (example):
@@ -69,11 +69,7 @@ Start Postgres (example):
 docker compose up -d
 ```
 
-Build demo chunk indexes + summary catalog (optional):
-
-```bash
-python ingest.py
-```
+Create tables (if needed): `python -m catalog.cli init-db`
 
 ## Run
 
@@ -90,7 +86,7 @@ streamlit run app.py
 # or: ./run_streamlit.sh
 ```
 
-Configuration knobs for routing live in **`.env`** (see **`.env.example`**: `CATALOG_ROUTE_TOP_K`, `CATALOG_ROUTE_MAX_L2`, etc.).
+Routing and LLM options: **`.env`** (see **`.env.example`**): `CATALOG_ROUTE_TOP_K`, `LLM_PROVIDER`, `GEMINI_API_KEY`, etc.
 
 ## Key modules
 
@@ -98,10 +94,12 @@ Configuration knobs for routing live in **`.env`** (see **`.env.example`**: `CAT
 |--------|------|
 | `catalog/ivf_pq_faiss.py` | Build / save / **search** the summary FAISS catalog. |
 | `catalog/routing.py` | `route_query_to_documents`: summary search ∩ chunk-indexed ids. |
-| `catalog/pipeline.py` | Upload pipeline, `rebuild_summary_catalog()`, DB + demo merge into catalog. |
+| `catalog/pipeline.py` | Upload pipeline, `rebuild_summary_catalog()` from DB. |
+| `ingest.py` | `build_chunk_index_for_text` for chunk FAISS (used by pipeline). |
+| `agent/llm.py` | `get_chat_llm` (Ollama or Gemini), `get_embeddings` (Ollama). |
 | `agent/workflow.py` | LangGraph: `route` → `retrieve` → `synthesize`. |
 | `tools/retriever_tool.py` | Chunk retrieval for one `document_id`. |
-| `app.py` | Streamlit: Library, Upload, catalog search, agent flow chart, research chat. |
+| `app.py` | Streamlit UI. |
 
 ## License
 

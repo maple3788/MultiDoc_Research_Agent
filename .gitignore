@@ -30,7 +30,7 @@ dist/
 build/
 *.egg-info/
 
-# Generated indexes (run `python ingest.py`)
+# Generated indexes (created on document upload)
 vector_stores/
 
 # Uploads and doc-level FAISS catalog

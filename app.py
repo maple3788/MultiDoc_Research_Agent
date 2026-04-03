@@ -20,10 +20,6 @@ from catalog.ivf_pq_faiss import search_catalog
 from catalog.pipeline import delete_document, ingest_bytes, list_all_documents
 from db.models import Document
 from db.session import SessionLocal, init_db
-from ingest import run_ingest
-from main import ensure_vector_indexes
-from tools.retriever_tool import clear_vector_cache
-
 PAGES = ["Library", "Upload", "Search catalog", "Agent flow", "Research agent"]
 
 # Max prior messages (user+assistant pairs) to inject into the agent prompt for follow-ups.
@@ -113,19 +109,9 @@ page = st.sidebar.radio(
 )
 
 st.sidebar.caption(
-    "Uploads build **summary** (`catalog_store/`) and **chunk** FAISS (`vector_stores/<id>/`)."
+    "Uploads build **summary** (`catalog_store/`) and **chunk** FAISS (`vector_stores/<id>/`). "
+    "Chat LLM: set **`LLM_PROVIDER`** / **`GOOGLE_API_KEY`** in `.env` for Gemini."
 )
-
-with st.sidebar.expander("Demo data (optional)", expanded=False):
-    st.caption("Builds **company_a_q3** / **company_b_q3** from `data/` for the sample Q3 comparison.")
-    if st.button("Build demo chunk indexes", use_container_width=True):
-        with st.spinner("Running ingest…"):
-            try:
-                run_ingest()
-                clear_vector_cache()
-                st.success("Done.")
-            except Exception as e:
-                st.error(str(e))
 
 st.sidebar.caption(
     "Research agent: **chat** on the left, **trace** on the right (refreshes each run). "
@@ -299,43 +285,34 @@ elif page == "Research agent":
 
     # Next pass runs the agent so the user message appears in the scroll area first (no bubbles below the input).
     if st.session_state.research_run_pending:
+        agent_query = build_research_agent_query(st.session_state.research_chat_messages)
+        trace_steps: list[dict[str, object]] = []
+        report_final: str | None = None
+        err: str | None = None
+
         try:
-            ensure_vector_indexes()
+            with st.status("Running agent…", expanded=True):
+                for event in stream_agent_updates(agent_query):
+                    for node_name, upd in event.items():
+                        for entry in upd.get("debug_trace", []):
+                            trace_steps.append({"node": node_name, "entry": entry})
+                        if node_name == "synthesize" and upd.get("report"):
+                            report_final = upd["report"]
         except Exception as e:
-            st.session_state.research_chat_messages.append(
-                {"role": "assistant", "content": f"**Index error:** {e}"}
-            )
-            st.session_state.research_run_pending = False
-            st.rerun()
+            err = str(e)
+
+        st.session_state.research_last_trace = trace_steps
+
+        if err:
+            reply = f"**Error:** {err}"
+        elif report_final:
+            reply = report_final
         else:
-            agent_query = build_research_agent_query(st.session_state.research_chat_messages)
-            trace_steps: list[dict[str, object]] = []
-            report_final: str | None = None
-            err: str | None = None
+            reply = "_No report was produced. Check indexes and the trace panel._"
 
-            try:
-                with st.status("Running agent…", expanded=True):
-                    for event in stream_agent_updates(agent_query):
-                        for node_name, upd in event.items():
-                            for entry in upd.get("debug_trace", []):
-                                trace_steps.append({"node": node_name, "entry": entry})
-                            if node_name == "synthesize" and upd.get("report"):
-                                report_final = upd["report"]
-            except Exception as e:
-                err = str(e)
-
-            st.session_state.research_last_trace = trace_steps
-
-            if err:
-                reply = f"**Error:** {err}"
-            elif report_final:
-                reply = report_final
-            else:
-                reply = "_No report was produced. Check indexes and the trace panel._"
-
-            st.session_state.research_chat_messages.append({"role": "assistant", "content": reply})
-            st.session_state.research_run_pending = False
-            st.rerun()
+        st.session_state.research_chat_messages.append({"role": "assistant", "content": reply})
+        st.session_state.research_run_pending = False
+        st.rerun()
 
     # Full-width input bar at the bottom; history scrolls in the column above.
     if prompt := st.chat_input("Ask about your documents…"):
