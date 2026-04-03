@@ -88,6 +88,12 @@ def build_faiss_for_doc(doc_id: str, text: str, embeddings) -> None:
     store.save_local(str(out))
 
 
+def build_chunk_index_for_text(doc_id: str, text: str) -> None:
+    """Chunk ``text``, embed, and save ``vector_stores/<doc_id>/`` (used for uploads)."""
+    embeddings = get_embeddings()
+    build_faiss_for_doc(doc_id, text, embeddings)
+
+
 def run_ingest() -> None:
     paths = _write_sources()
     embeddings = get_embeddings()

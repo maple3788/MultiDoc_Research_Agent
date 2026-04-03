@@ -16,5 +16,15 @@ openai>=1.59.0
 # Config
 python-dotenv>=1.0.1
 
+# UI
+streamlit>=1.33.0
+
+# PDF text extraction (uploads)
+pypdf>=5.0.0
+
 # Structured plans / schemas
 pydantic>=2.0.0
+
+# PostgreSQL metadata
+sqlalchemy>=2.0.0
+psycopg[binary]>=3.1.0

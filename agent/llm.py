@@ -25,7 +25,7 @@ def get_chat_llm(
     temperature: float = 0.2,
     base_url: str | None = None,
 ) -> ChatOllama:
-    """Default chat model: Llama 3.1 via Ollama."""
+    """Default chat model: Llama 3.2 via Ollama (override with OLLAMA_CHAT_MODEL)."""
     kwargs: dict = {
         "model": model or os.environ.get("OLLAMA_CHAT_MODEL", "llama3.2"),
         "temperature": temperature,
