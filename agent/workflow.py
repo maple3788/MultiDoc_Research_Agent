@@ -71,13 +71,13 @@ def _default_search_query(question: str) -> str:
     return q[:800] if len(q) > 800 else q
 
 
-def _synth_chain():
-    llm = get_chat_llm(temperature=0.3)
+def _synth_chain(llm_provider: str | None = None):
+    llm = get_chat_llm(temperature=0.3, provider=llm_provider)
     return SYNTH_PROMPT | llm | StrOutputParser()
 
 
-def _synth_chain_out_of_catalog():
-    llm = get_chat_llm(temperature=0.25)
+def _synth_chain_out_of_catalog(llm_provider: str | None = None):
+    llm = get_chat_llm(temperature=0.25, provider=llm_provider)
     return OUT_OF_CATALOG_PROMPT | llm | StrOutputParser()
 
 
@@ -119,6 +119,7 @@ def _emit_trace(entry: dict[str, Any]) -> None:
 
 class GraphState(TypedDict):
     query: str
+    llm_provider: NotRequired[str]
     relevant_to_catalog: NotRequired[bool]
     skip_retrieval: NotRequired[bool]
     plan_steps: list[dict[str, str]]
@@ -200,14 +201,16 @@ def _action_node(state: GraphState) -> dict:
 def _synthesis_node(state: GraphState) -> dict:
     q = state["query"]
     relevant = state.get("relevant_to_catalog", True)
+    llm_provider = state.get("llm_provider")
 
     if not relevant:
-        chain = _synth_chain_out_of_catalog()
+        chain = _synth_chain_out_of_catalog(llm_provider)
         messages = OUT_OF_CATALOG_PROMPT.format_messages(question=q)
         report = chain.invoke({"question": q})
         entry = {
             "node": "synthesize",
             "mode": "out_of_catalog",
+            "llm_provider": llm_provider,
             "state_in": {
                 "query": q,
                 "relevant_to_catalog": False,
@@ -218,13 +221,14 @@ def _synthesis_node(state: GraphState) -> dict:
             "state_update": {"report": _trunc(report, TRACE_MAX_CHARS)},
         }
     else:
-        chain = _synth_chain()
+        chain = _synth_chain(llm_provider)
         context = _format_context(state["retrieved"])
         messages = SYNTH_PROMPT.format_messages(question=q, context=context)
         report = chain.invoke({"question": q, "context": context})
         entry = {
             "node": "synthesize",
             "mode": "grounded",
+            "llm_provider": llm_provider,
             "state_in": {
                 "query": q,
                 "relevant_to_catalog": True,
@@ -256,9 +260,8 @@ def build_graph():
     return g.compile()
 
 
-def run_agent(query: str) -> GraphState:
-    graph = build_graph()
-    initial: GraphState = {
+def _initial_state(query: str, llm_provider: str | None = None) -> GraphState:
+    state: GraphState = {
         "query": query,
         "relevant_to_catalog": True,
         "skip_retrieval": False,
@@ -266,25 +269,25 @@ def run_agent(query: str) -> GraphState:
         "retrieved": [],
         "debug_trace": [],
     }
-    return graph.invoke(initial)
+    if llm_provider is not None:
+        state["llm_provider"] = llm_provider
+    return state
 
 
-def stream_agent_updates(query: str):
+def run_agent(query: str, *, llm_provider: str | None = None) -> GraphState:
+    graph = build_graph()
+    return graph.invoke(_initial_state(query, llm_provider))
+
+
+def stream_agent_updates(query: str, *, llm_provider: str | None = None):
     """
     Stream LangGraph ``stream_mode='updates'`` events (one dict per completed node).
 
     Each yield is like ``{'route': {'plan_steps': ..., 'debug_trace': [...]}}``.
+    Optional ``llm_provider`` (``ollama`` / ``gemini``) overrides ``LLM_PROVIDER`` for synthesis.
     """
     graph = build_graph()
-    initial: GraphState = {
-        "query": query,
-        "relevant_to_catalog": True,
-        "skip_retrieval": False,
-        "plan_steps": [],
-        "retrieved": [],
-        "debug_trace": [],
-    }
-    yield from graph.stream(initial, stream_mode="updates")
+    yield from graph.stream(_initial_state(query, llm_provider), stream_mode="updates")
 
 
 def get_agent_flow_assets() -> tuple[bytes, str]:

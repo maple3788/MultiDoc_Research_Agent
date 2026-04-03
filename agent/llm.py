@@ -30,16 +30,21 @@ def get_chat_llm(
     *,
     temperature: float = 0.2,
     base_url: str | None = None,
+    provider: str | None = None,
 ) -> BaseChatModel:
     """
     Chat model for summarization and synthesis.
 
-    Set ``LLM_PROVIDER=gemini`` (or ``google``) and a Google AI API key to use Gemini.
+    ``provider`` overrides ``LLM_PROVIDER`` when set (e.g. ``ollama`` or ``gemini``).
+    Otherwise set ``LLM_PROVIDER=gemini`` (or ``google``) and a Google AI API key for Gemini.
     Default is Ollama (``OLLAMA_CHAT_MODEL``, default ``llama3.2``).
     """
-    provider = (os.environ.get("LLM_PROVIDER") or "ollama").strip().lower()
+    if provider is not None and str(provider).strip():
+        p = str(provider).strip().lower()
+    else:
+        p = (os.environ.get("LLM_PROVIDER") or "ollama").strip().lower()
 
-    if provider in ("gemini", "google", "google_genai"):
+    if p in ("gemini", "google", "google_genai"):
         try:
             from langchain_google_genai import ChatGoogleGenerativeAI
         except ImportError as e:

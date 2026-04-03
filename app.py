@@ -9,6 +9,7 @@ Run: ``streamlit run app.py`` (use project ``.venv``).
 
 from __future__ import annotations
 
+import os
 import uuid
 from io import BytesIO
 
@@ -35,6 +36,11 @@ def _init_state() -> None:
         st.session_state.research_last_trace = []
     if "research_run_pending" not in st.session_state:
         st.session_state.research_run_pending = False
+    if "research_llm_provider" not in st.session_state:
+        env_p = (os.environ.get("LLM_PROVIDER") or "ollama").strip().lower()
+        st.session_state.research_llm_provider = (
+            "gemini" if env_p in ("gemini", "google", "google_genai") else "ollama"
+        )
 
 
 def build_research_agent_query(messages: list[dict[str, str]]) -> str:
@@ -110,7 +116,7 @@ page = st.sidebar.radio(
 
 st.sidebar.caption(
     "Uploads build **summary** (`catalog_store/`) and **chunk** FAISS (`vector_stores/<id>/`). "
-    "Chat LLM: set **`LLM_PROVIDER`** / **`GOOGLE_API_KEY`** in `.env` for Gemini."
+    "On **Research agent**, use **Chat LLM** to pick Ollama or Gemini (Gemini: set API keys in `.env`)."
 )
 
 st.sidebar.caption(
@@ -119,6 +125,13 @@ st.sidebar.caption(
 )
 
 if page == "Research agent":
+    st.sidebar.selectbox(
+        "Chat LLM",
+        options=["ollama", "gemini"],
+        format_func=lambda x: "Ollama (local)" if x == "ollama" else "Gemini (Google AI)",
+        key="research_llm_provider",
+        help="Overrides `LLM_PROVIDER` for synthesis on this page. Gemini needs `GOOGLE_API_KEY` or `GEMINI_API_KEY` in `.env`.",
+    )
     if st.sidebar.button("Clear chat & trace", use_container_width=True):
         st.session_state.research_chat_messages = []
         st.session_state.research_last_trace = []
@@ -292,7 +305,10 @@ elif page == "Research agent":
 
         try:
             with st.status("Running agent…", expanded=True):
-                for event in stream_agent_updates(agent_query):
+                for event in stream_agent_updates(
+                    agent_query,
+                    llm_provider=st.session_state.research_llm_provider,
+                ):
                     for node_name, upd in event.items():
                         for entry in upd.get("debug_trace", []):
                             trace_steps.append({"node": node_name, "entry": entry})
