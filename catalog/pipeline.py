@@ -148,6 +148,22 @@ def delete_document(doc_id: uuid.UUID) -> bool:
     return True
 
 
+def _demo_catalog_pairs() -> list[tuple[str, str]]:
+    """
+    Non-UUID demo ids under ``vector_stores/`` (from ``python ingest.py``): embed source text
+    as pseudo-summaries so summary-FAISS routing can find them alongside PostgreSQL uploads.
+    """
+    from ingest import COMPANY_A_TEXT, COMPANY_B_TEXT
+
+    pairs: list[tuple[str, str]] = []
+    for doc_id, text in (("company_a_q3", COMPANY_A_TEXT), ("company_b_q3", COMPANY_B_TEXT)):
+        vs = PROJECT_ROOT / "vector_stores" / doc_id / "index.faiss"
+        if vs.is_file():
+            snippet = text.strip()[:4000]
+            pairs.append((doc_id, snippet))
+    return pairs
+
+
 def _rebuild_catalog_from_db() -> None:
     session = SessionLocal()
     try:
@@ -159,9 +175,19 @@ def _rebuild_catalog_from_db() -> None:
         )
         rows = list(session.scalars(q).all())
         pairs: list[tuple[str, str]] = [(str(r.id), r.summary or "") for r in rows if r.summary]
-        rebuild_catalog_from_rows(pairs)
     finally:
         session.close()
+
+    seen = {p[0] for p in pairs}
+    for did, summ in _demo_catalog_pairs():
+        if did not in seen:
+            pairs.append((did, summ))
+    rebuild_catalog_from_rows(pairs)
+
+
+def rebuild_summary_catalog() -> None:
+    """Rebuild ``catalog_store/`` from DB summaries plus demo ``vector_stores`` ids (if present)."""
+    _rebuild_catalog_from_db()
 
 
 def list_all_documents() -> list[Document]:

@@ -1,5 +1,5 @@
 """
-Run the full pipeline: ensure FAISS indexes exist, plan -> retrieve -> synthesize, print report.
+Run the full pipeline: ensure FAISS indexes exist, route (summary FAISS) -> retrieve -> synthesize, print report.
 """
 
 from __future__ import annotations

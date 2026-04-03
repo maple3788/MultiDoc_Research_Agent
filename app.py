@@ -240,7 +240,7 @@ elif page == "Agent flow":
     )
     try:
         png_bytes, mermaid_src = _cached_agent_flow()
-        st.image(BytesIO(png_bytes), caption="LangGraph · plan → retrieve → synthesize")
+        st.image(BytesIO(png_bytes), caption="LangGraph · route (summary FAISS) → retrieve → synthesize")
         with st.expander("Mermaid source"):
             st.code(mermaid_src, language="text")
         st.download_button(

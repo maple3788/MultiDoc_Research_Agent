@@ -1,7 +1,8 @@
 """
-LangGraph workflow: structured LLM plan -> FAISS retrieval per step -> LLM synthesis (LCEL).
+LangGraph workflow: **summary FAISS routing** → chunk retrieval per document → LLM synthesis.
 
-Planner sees **dynamic** document ids under ``vector_stores/`` (upload UUIDs + demo ids like ``company_a_q3``).
+Document selection: embed the user query, search the document-level summary index (``catalog_store/``),
+then intersect with ids that have chunk FAISS under ``vector_stores/<id>/``. No LLM "planner" for routing.
 """
 
 from __future__ import annotations
@@ -10,47 +11,24 @@ import json
 import operator
 import os
 import pprint
-from typing import Annotated, Any, NotRequired, TypedDict
+from typing import Annotated, Any, Literal, NotRequired, TypedDict
 
 from langchain_core.messages import BaseMessage
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langgraph.graph import END, StateGraph
-from pydantic import BaseModel, Field
 
-from agent.doc_index import planner_doc_catalog_text
 from agent.llm import get_chat_llm
 from tools.retriever_tool import retrieve_document_chunks
-
-# --- Structured planning ---
-
-
-class RetrievalStep(BaseModel):
-    """One retrieval call against a single indexed document."""
-
-    target_doc: str = Field(
-        description="Exact document id: folder name under vector_stores/ (UUID string or e.g. company_a_q3).",
-    )
-    search_query: str = Field(
-        description="Short, focused query for semantic search in that document only.",
-    )
-
-
-class ResearchPlan(BaseModel):
-    """Planner output: ordered retrieval steps for the user's question."""
-
-    steps: list[RetrievalStep] = Field(
-        description="Steps to gather evidence; typically one or more documents when comparing.",
-    )
-
 
 SYNTH_PROMPT = ChatPromptTemplate.from_messages(
     [
         (
             "system",
             """You are a financial analyst writing for an executive audience.
-Using ONLY the retrieved context below, write a detailed, professional comparative report in Markdown.
-Include: executive summary, side-by-side metrics where possible, and brief commentary on trends.
+Using ONLY the retrieved context below, write a detailed answer in Markdown.
+For financial metrics: use a professional comparative style (executive summary, side-by-side metrics where possible, trends).
+For non-financial content (books, policies, narrative text), summarize and cite themes from the context—do not invent facts.
 If some information is missing from the context, say so explicitly. Do not invent figures.""",
         ),
         (
@@ -65,34 +43,38 @@ Retrieved context (from indexed reports):
     ]
 )
 
+OUT_OF_CATALOG_PROMPT = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            """You assist users of a document-grounded research app.
+The indexed document library does NOT apply to this question (no relevant documents were selected by summary search).
 
-def _plan_prompt() -> ChatPromptTemplate:
-    catalog = planner_doc_catalog_text()
-    system = f"""You are a research planner for multi-document Q&A.
-
-Available chunk-indexed document ids (use exact strings as target_doc):
-{catalog}
-
-Decompose the user's question into retrieval steps. Each step targets ONE document with a
-specific search_query tailored for vector retrieval (metrics, regions, margins, growth, etc.).
-When comparing multiple sources, use separate steps per document. Output valid structured data only."""
-    return ChatPromptTemplate.from_messages(
-        [
-            ("system", system),
-            ("human", "{question}"),
-        ]
-    )
+Rules:
+- Do NOT invent company names, financial metrics, comparison tables, or pretend you read indexed reports.
+- Do NOT write an executive-style comparative report unless the user's question clearly asks for that and it fits general knowledge alone.
+- Briefly explain that no matching documents were found in the corpus for this question.
+- Then either give a short, honest general-knowledge answer if the question allows it, or politely decline if an answer would need sources you do not have.
+- Use Markdown. Keep the reply concise unless the user clearly asks for depth.""",
+        ),
+        ("human", "{question}"),
+    ]
+)
 
 
-def _plan_chain():
-    llm = get_chat_llm(temperature=0)
-    structured = llm.with_structured_output(ResearchPlan)
-    return _plan_prompt() | structured
+def _default_search_query(question: str) -> str:
+    q = question.strip()
+    return q[:800] if len(q) > 800 else q
 
 
 def _synth_chain():
     llm = get_chat_llm(temperature=0.25)
     return SYNTH_PROMPT | llm | StrOutputParser()
+
+
+def _synth_chain_out_of_catalog():
+    llm = get_chat_llm(temperature=0.25)
+    return OUT_OF_CATALOG_PROMPT | llm | StrOutputParser()
 
 
 def _format_context(retrieved: list[tuple[str, str]]) -> str:
@@ -133,29 +115,48 @@ def _emit_trace(entry: dict[str, Any]) -> None:
 
 class GraphState(TypedDict):
     query: str
+    relevant_to_catalog: NotRequired[bool]
+    skip_retrieval: NotRequired[bool]
     plan_steps: list[dict[str, str]]
     retrieved: Annotated[list[tuple[str, str]], operator.add]
     report: NotRequired[str]
     debug_trace: Annotated[list[dict[str, Any]], operator.add]
 
 
-def _plan_node(state: GraphState) -> dict:
+def _route_node(state: GraphState) -> dict:
+    """Pick documents by embedding the query against summary FAISS, then chunk-index intersection."""
+    from catalog.routing import route_query_to_documents
+
     q = state["query"]
-    prompt = _plan_prompt()
-    messages = prompt.format_messages(question=q)
-    chain = _plan_chain()
-    plan: ResearchPlan = chain.invoke({"question": q})
-    steps = [s.model_dump() for s in plan.steps]
+    routed = route_query_to_documents(q)
+    sq = _default_search_query(q)
+    steps = [{"target_doc": doc_id, "search_query": sq} for doc_id, _dist in routed]
+    relevant = len(steps) > 0
+    skip_retrieval = not relevant
 
     entry = {
-        "node": "plan",
+        "node": "route",
         "state_in": {"query": q},
-        "prompt_messages": _messages_to_trace(messages),
-        "llm_output_structured": plan.model_dump(),
-        "state_update": {"plan_steps": steps},
+        "summary_faiss_hits": [{"document_id": d, "l2": dist} for d, dist in routed],
+        "state_update": {
+            "plan_steps": steps,
+            "relevant_to_catalog": relevant,
+            "skip_retrieval": skip_retrieval,
+        },
     }
     _emit_trace(entry)
-    return {"plan_steps": steps, "debug_trace": [entry]}
+    return {
+        "plan_steps": steps,
+        "relevant_to_catalog": relevant,
+        "skip_retrieval": skip_retrieval,
+        "debug_trace": [entry],
+    }
+
+
+def _route_after_plan(state: GraphState) -> Literal["retrieve", "synthesize"]:
+    if state.get("skip_retrieval"):
+        return "synthesize"
+    return "retrieve"
 
 
 def _action_node(state: GraphState) -> dict:
@@ -164,7 +165,14 @@ def _action_node(state: GraphState) -> dict:
     for step in state["plan_steps"]:
         doc_id = step["target_doc"]
         sq = step["search_query"]
-        payload = retrieve_document_chunks.invoke({"query": sq, "document_id": doc_id})
+        try:
+            payload = retrieve_document_chunks.invoke({"query": sq, "document_id": doc_id})
+        except FileNotFoundError as e:
+            payload = (
+                f"[document_id={doc_id}]\n--- Retrieval error ---\n"
+                f"No chunk index found for this document. Re-upload the file or run ingest so "
+                f"vector_stores/{doc_id}/ exists.\n({e})"
+            )
         retrieved.append((doc_id, payload))
         calls.append(
             {
@@ -186,34 +194,58 @@ def _action_node(state: GraphState) -> dict:
 
 
 def _synthesis_node(state: GraphState) -> dict:
-    chain = _synth_chain()
-    context = _format_context(state["retrieved"])
     q = state["query"]
-    messages = SYNTH_PROMPT.format_messages(question=q, context=context)
-    report = chain.invoke({"question": q, "context": context})
+    relevant = state.get("relevant_to_catalog", True)
 
-    entry = {
-        "node": "synthesize",
-        "state_in": {
-            "query": q,
-            "retrieved_pairs_count": len(state["retrieved"]),
-        },
-        "prompt_messages": _messages_to_trace(messages),
-        "llm_output_text": _trunc(report, TRACE_MAX_CHARS),
-        "state_update": {"report": _trunc(report, TRACE_MAX_CHARS)},
-    }
+    if not relevant:
+        chain = _synth_chain_out_of_catalog()
+        messages = OUT_OF_CATALOG_PROMPT.format_messages(question=q)
+        report = chain.invoke({"question": q})
+        entry = {
+            "node": "synthesize",
+            "mode": "out_of_catalog",
+            "state_in": {
+                "query": q,
+                "relevant_to_catalog": False,
+                "retrieved_pairs_count": 0,
+            },
+            "prompt_messages": _messages_to_trace(messages),
+            "llm_output_text": _trunc(report, TRACE_MAX_CHARS),
+            "state_update": {"report": _trunc(report, TRACE_MAX_CHARS)},
+        }
+    else:
+        chain = _synth_chain()
+        context = _format_context(state["retrieved"])
+        messages = SYNTH_PROMPT.format_messages(question=q, context=context)
+        report = chain.invoke({"question": q, "context": context})
+        entry = {
+            "node": "synthesize",
+            "mode": "grounded",
+            "state_in": {
+                "query": q,
+                "relevant_to_catalog": True,
+                "retrieved_pairs_count": len(state["retrieved"]),
+            },
+            "prompt_messages": _messages_to_trace(messages),
+            "llm_output_text": _trunc(report, TRACE_MAX_CHARS),
+            "state_update": {"report": _trunc(report, TRACE_MAX_CHARS)},
+        }
     _emit_trace(entry)
     return {"report": report, "debug_trace": [entry]}
 
 
 def build_graph():
     g = StateGraph(GraphState)
-    g.add_node("plan", _plan_node)
+    g.add_node("route", _route_node)
     g.add_node("retrieve", _action_node)
     g.add_node("synthesize", _synthesis_node)
 
-    g.set_entry_point("plan")
-    g.add_edge("plan", "retrieve")
+    g.set_entry_point("route")
+    g.add_conditional_edges(
+        "route",
+        _route_after_plan,
+        {"retrieve": "retrieve", "synthesize": "synthesize"},
+    )
     g.add_edge("retrieve", "synthesize")
     g.add_edge("synthesize", END)
 
@@ -224,6 +256,8 @@ def run_agent(query: str) -> GraphState:
     graph = build_graph()
     initial: GraphState = {
         "query": query,
+        "relevant_to_catalog": True,
+        "skip_retrieval": False,
         "plan_steps": [],
         "retrieved": [],
         "debug_trace": [],
@@ -235,12 +269,13 @@ def stream_agent_updates(query: str):
     """
     Stream LangGraph ``stream_mode='updates'`` events (one dict per completed node).
 
-    Each yield is like ``{'plan': {'plan_steps': ..., 'debug_trace': [...]}}``.
-    Use this for UIs that show trace rows as each step finishes.
+    Each yield is like ``{'route': {'plan_steps': ..., 'debug_trace': [...]}}``.
     """
     graph = build_graph()
     initial: GraphState = {
         "query": query,
+        "relevant_to_catalog": True,
+        "skip_retrieval": False,
         "plan_steps": [],
         "retrieved": [],
         "debug_trace": [],

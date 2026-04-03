@@ -104,6 +104,11 @@ def run_ingest() -> None:
         build_faiss_for_doc(doc_id, text, embeddings)
         print(f"Indexed {doc_id} -> {VECTOR_ROOT / doc_id}")
 
+    from catalog.pipeline import rebuild_summary_catalog
+
+    rebuild_summary_catalog()
+    print(f"Updated summary catalog -> {PROJECT_ROOT / 'catalog_store'}")
+
 
 def main() -> None:
     run_ingest()
