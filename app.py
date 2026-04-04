@@ -38,9 +38,12 @@ def _init_state() -> None:
         st.session_state.research_run_pending = False
     if "research_llm_provider" not in st.session_state:
         env_p = (os.environ.get("LLM_PROVIDER") or "ollama").strip().lower()
-        st.session_state.research_llm_provider = (
-            "gemini" if env_p in ("gemini", "google", "google_genai") else "ollama"
-        )
+        if env_p in ("gemini", "google", "google_genai"):
+            st.session_state.research_llm_provider = "gemini"
+        elif env_p in ("zai", "glm", "zhipu", "bigmodel"):
+            st.session_state.research_llm_provider = "zai"
+        else:
+            st.session_state.research_llm_provider = "ollama"
 
 
 def build_research_agent_query(messages: list[dict[str, str]]) -> str:
@@ -116,7 +119,7 @@ page = st.sidebar.radio(
 
 st.sidebar.caption(
     "Uploads build **summary** (`catalog_store/`) and **chunk** FAISS (`vector_stores/<id>/`). "
-    "On **Research agent**, use **Chat LLM** to pick Ollama or Gemini (Gemini: set API keys in `.env`)."
+    "On **Research agent**, **Chat LLM** can use Ollama, Gemini, or Z.ai GLM (API keys in `.env`)."
 )
 
 st.sidebar.caption(
@@ -127,10 +130,14 @@ st.sidebar.caption(
 if page == "Research agent":
     st.sidebar.selectbox(
         "Chat LLM",
-        options=["ollama", "gemini"],
-        format_func=lambda x: "Ollama (local)" if x == "ollama" else "Gemini (Google AI)",
+        options=["ollama", "gemini", "zai"],
+        format_func=lambda x: {
+            "ollama": "Ollama (local)",
+            "gemini": "Gemini (Google AI)",
+            "zai": "GLM-4.7-Flash (Z.ai)",
+        }[x],
         key="research_llm_provider",
-        help="Overrides `LLM_PROVIDER` for synthesis on this page. Gemini needs `GOOGLE_API_KEY` or `GEMINI_API_KEY` in `.env`.",
+        help="Overrides `LLM_PROVIDER` for synthesis. Gemini: `GOOGLE_API_KEY` / `GEMINI_API_KEY`. Z.ai: `ZAI_API_KEY` and `pip install zai-sdk`.",
     )
     if st.sidebar.button("Clear chat & trace", use_container_width=True):
         st.session_state.research_chat_messages = []

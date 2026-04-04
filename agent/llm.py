@@ -1,8 +1,8 @@
 """
 LLM and embedding model factories.
 
-- **Chat:** ``LLM_PROVIDER=ollama`` (default) or ``gemini``. Gemini uses ``GOOGLE_API_KEY`` or
-  ``GEMINI_API_KEY`` (see ``.env.example``).
+- **Chat:** ``LLM_PROVIDER=ollama`` (default), ``gemini``, or ``zai`` (GLM via ``zai-sdk``).
+  Gemini: ``GOOGLE_API_KEY`` / ``GEMINI_API_KEY``. Z.ai: ``ZAI_API_KEY`` (see ``.env.example``).
 - **Embeddings:** Ollama only (must match vectors in ``catalog_store/`` and ``vector_stores/``).
 """
 
@@ -25,6 +25,10 @@ def _google_api_key() -> str | None:
     )
 
 
+def _zai_api_key() -> str | None:
+    return os.environ.get("ZAI_API_KEY") or os.environ.get("BIGMODEL_API_KEY")
+
+
 def get_chat_llm(
     model: str | None = None,
     *,
@@ -35,9 +39,9 @@ def get_chat_llm(
     """
     Chat model for summarization and synthesis.
 
-    ``provider`` overrides ``LLM_PROVIDER`` when set (e.g. ``ollama`` or ``gemini``).
-    Otherwise set ``LLM_PROVIDER=gemini`` (or ``google``) and a Google AI API key for Gemini.
-    Default is Ollama (``OLLAMA_CHAT_MODEL``, default ``llama3.2``).
+    ``provider`` overrides ``LLM_PROVIDER`` when set (e.g. ``ollama``, ``gemini``, or ``zai``).
+    Gemini needs a Google AI key; Z.ai needs ``ZAI_API_KEY`` and ``pip install zai-sdk``.
+    Default chat is Ollama (``OLLAMA_CHAT_MODEL``, default ``llama3.2``).
     """
     if provider is not None and str(provider).strip():
         p = str(provider).strip().lower()
@@ -66,6 +70,23 @@ def get_chat_llm(
             model=gemini_model,
             google_api_key=key,
             temperature=temperature,
+        )
+
+    if p in ("zai", "glm", "zhipu", "bigmodel"):
+        from agent.zai_chat import ChatZai
+
+        key = _zai_api_key()
+        if not key:
+            raise ValueError(
+                "Set ZAI_API_KEY (or BIGMODEL_API_KEY) in the environment for LLM_PROVIDER=zai."
+            )
+        zai_model = model or os.environ.get("ZAI_CHAT_MODEL") or "glm-4.7-flash"
+        zai_base = (os.environ.get("ZAI_BASE_URL") or "").strip() or None
+        return ChatZai(
+            model=zai_model,
+            api_key=key,
+            temperature=temperature,
+            base_url=zai_base,
         )
 
     kwargs: dict = {

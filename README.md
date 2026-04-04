@@ -1,6 +1,6 @@
 # Multi-Document Research Agent
 
-RAG-style app: **document summaries** and **per-document chunk indexes** back a **LangGraph** agent. Queries are **routed** by embedding against the summary index (`catalog_store/`): only documents **close enough** to the best summary match are used (see **`CATALOG_ROUTE_L2_MARGIN`** and optional **`CATALOG_ROUTE_MAX_BEST_L2`** in `.env`). Then **chunks** are fetched from those docs (up to **`CATALOG_ROUTE_TOP_K`**). Use **Ollama** or **Gemini** for chat (see `.env.example`). **Embeddings** stay on **Ollama** so vectors remain consistent. **Streamlit** (`app.py`) provides the UI; **PostgreSQL** stores upload metadata and summaries.
+RAG-style app: **document summaries** and **per-document chunk indexes** back a **LangGraph** agent. Queries are **routed** by embedding against the summary index (`catalog_store/`): only documents **close enough** to the best summary match are used (see **`CATALOG_ROUTE_L2_MARGIN`** and optional **`CATALOG_ROUTE_MAX_BEST_L2`** in `.env`). Then **chunks** are fetched from those docs (up to **`CATALOG_ROUTE_TOP_K`**). Use **Ollama**, **Gemini**, or **Z.ai** (GLM-4.7-Flash via `zai-sdk`) for chat (see `.env.example`). **Embeddings** stay on **Ollama** so vectors remain consistent. **Streamlit** (`app.py`) provides the UI; **PostgreSQL** stores upload metadata and summaries.
 
 ## Pipeline (overview)
 
@@ -96,7 +96,7 @@ Routing and LLM options: **`.env`** (see **`.env.example`**): `CATALOG_ROUTE_TOP
 | `catalog/routing.py` | `route_query_to_documents`: summary search ∩ chunk-indexed ids. |
 | `catalog/pipeline.py` | Upload pipeline, `rebuild_summary_catalog()` from DB. |
 | `ingest.py` | `build_chunk_index_for_text` for chunk FAISS (used by pipeline). |
-| `agent/llm.py` | `get_chat_llm` (Ollama or Gemini), `get_embeddings` (Ollama). |
+| `agent/llm.py` | `get_chat_llm` (Ollama, Gemini, or Z.ai), `get_embeddings` (Ollama). |
 | `agent/workflow.py` | LangGraph: `route` → `retrieve` → `synthesize`. |
 | `tools/retriever_tool.py` | Chunk retrieval for one `document_id`. |
 | `app.py` | Streamlit UI. |

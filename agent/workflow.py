@@ -284,7 +284,7 @@ def stream_agent_updates(query: str, *, llm_provider: str | None = None):
     Stream LangGraph ``stream_mode='updates'`` events (one dict per completed node).
 
     Each yield is like ``{'route': {'plan_steps': ..., 'debug_trace': [...]}}``.
-    Optional ``llm_provider`` (``ollama`` / ``gemini``) overrides ``LLM_PROVIDER`` for synthesis.
+    Optional ``llm_provider`` (``ollama`` / ``gemini`` / ``zai``) overrides ``LLM_PROVIDER`` for synthesis.
     """
     graph = build_graph()
     yield from graph.stream(_initial_state(query, llm_provider), stream_mode="updates")
