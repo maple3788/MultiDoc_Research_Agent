@@ -9,7 +9,7 @@ from pathlib import Path
 
 from sqlalchemy import select
 
-from catalog.ivf_pq_faiss import search_catalog
+from catalog.milvus_catalog import search_catalog
 from catalog.pipeline import ingest_file, list_ready_summaries
 from db.models import Document
 from db.session import SessionLocal, init_db
@@ -54,7 +54,7 @@ def cmd_list() -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(description="PostgreSQL + FAISS catalog (IVF+PQ) tools")
+    p = argparse.ArgumentParser(description="PostgreSQL + Milvus catalog tools")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("init-db", help="Create database tables")

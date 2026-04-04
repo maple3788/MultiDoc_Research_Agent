@@ -1,8 +1,8 @@
 """
-LangGraph workflow: **summary FAISS routing** → chunk retrieval per document → LLM synthesis.
+LangGraph workflow: **summary Milvus routing** → chunk retrieval per document → LLM synthesis.
 
-Document selection: embed the user query, search the document-level summary index (``catalog_store/``),
-then intersect with ids that have chunk FAISS under ``vector_stores/<id>/``. No LLM "planner" for routing.
+Document selection: embed the user query, search the document-level summary index in **Milvus**,
+then intersect with ids that have chunk vectors in Milvus. No LLM "planner" for routing.
 """
 
 from __future__ import annotations
@@ -129,7 +129,7 @@ class GraphState(TypedDict):
 
 
 def _route_node(state: GraphState) -> dict:
-    """Pick documents by embedding the query against summary FAISS, then chunk-index intersection."""
+    """Pick documents by embedding the query against summary Milvus, then chunk-index intersection."""
     from catalog.routing import route_query_to_documents
 
     q = state["query"]
@@ -142,7 +142,7 @@ def _route_node(state: GraphState) -> dict:
     entry = {
         "node": "route",
         "state_in": {"query": q},
-        "summary_faiss_hits": [{"document_id": d, "l2": dist} for d, dist in routed],
+        "summary_catalog_hits": [{"document_id": d, "l2": dist} for d, dist in routed],
         "state_update": {
             "plan_steps": steps,
             "relevant_to_catalog": relevant,
@@ -175,8 +175,7 @@ def _action_node(state: GraphState) -> dict:
         except FileNotFoundError as e:
             payload = (
                 f"[document_id={doc_id}]\n--- Retrieval error ---\n"
-                f"No chunk index found for this document. Re-upload the file or run ingest so "
-                f"vector_stores/{doc_id}/ exists.\n({e})"
+                f"No chunk vectors in Milvus for this document. Re-upload the file or run ingest.\n({e})"
             )
         retrieved.append((doc_id, payload))
         calls.append(

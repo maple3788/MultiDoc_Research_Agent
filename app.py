@@ -9,15 +9,18 @@ Run: ``streamlit run app.py`` (use project ``.venv``).
 
 from __future__ import annotations
 
+import logging
 import os
 import uuid
 from io import BytesIO
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
 
 import streamlit as st
 from sqlalchemy import select
 
 from agent.workflow import get_agent_flow_assets, get_agent_flow_mermaid, stream_agent_updates
-from catalog.ivf_pq_faiss import search_catalog
+from catalog.milvus_catalog import search_catalog
 from catalog.pipeline import delete_document, ingest_bytes, list_all_documents
 from db.models import Document
 from db.session import SessionLocal, init_db
@@ -25,6 +28,37 @@ PAGES = ["Library", "Upload", "Search catalog", "Agent flow", "Research agent"]
 
 # Max prior messages (user+assistant pairs) to inject into the agent prompt for follow-ups.
 _RESEARCH_CONTEXT_MAX_MESSAGES = 8
+
+_LOG = logging.getLogger("multidoc.app")
+
+
+def _configure_app_logging() -> Path:
+    """Log to stderr and ``data/logs/streamlit_app.log``. Parent logger ``multidoc`` so pipeline/UI child loggers are included."""
+    root = Path(__file__).resolve().parent
+    log_dir = root / "data" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / "streamlit_app.log"
+    fmt = logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s")
+    pkg = logging.getLogger("multidoc")
+    if not pkg.handlers:
+        pkg.setLevel(logging.DEBUG)
+        sh = logging.StreamHandler()
+        sh.setFormatter(fmt)
+        sh.setLevel(logging.INFO)
+        pkg.addHandler(sh)
+        fh = RotatingFileHandler(
+            log_path,
+            maxBytes=2_000_000,
+            backupCount=3,
+            encoding="utf-8",
+        )
+        fh.setFormatter(fmt)
+        fh.setLevel(logging.DEBUG)
+        pkg.addHandler(fh)
+    return log_path
+
+
+APP_LOG_FILE = _configure_app_logging()
 
 
 def _init_state() -> None:
@@ -80,6 +114,7 @@ def _ensure_database() -> bool:
         st.session_state.db_ready = True
         return True
     except Exception as e:
+        _LOG.exception("PostgreSQL init_db failed: %s", e)
         st.error(
             "Could not connect to PostgreSQL or create tables. "
             "Start Postgres (e.g. `docker compose up -d`) and set `DATABASE_URL` in `.env`.\n\n"
@@ -116,9 +151,10 @@ page = st.sidebar.radio(
     label_visibility="collapsed",
     key="nav_page",
 )
+_LOG.info("streamlit_script_run page=%r", page)
 
 st.sidebar.caption(
-    "Uploads build **summary** (`catalog_store/`) and **chunk** FAISS (`vector_stores/<id>/`). "
+    "Uploads embed **summaries** + **chunks** into **Milvus** (see `MILVUS_URI`). "
     "On **Research agent**, **Chat LLM** can use Ollama, Gemini, or Z.ai GLM (API keys in `.env`)."
 )
 
@@ -185,34 +221,67 @@ elif page == "Upload":
     st.markdown('<p class="main-header">Upload files</p>', unsafe_allow_html=True)
     st.markdown(
         "<p class='subtle'>Files go to <code>uploads/</code>, are summarized (<strong>llama3.2</strong>), "
-        "stored in PostgreSQL, and both the <strong>summary catalog</strong> and <strong>chunk</strong> indexes "
-        "under <code>vector_stores/&lt;document-id&gt;/</code> are updated. "
+        "stored in PostgreSQL, and <strong>Milvus</strong> is updated (summary + chunk collections). "
         "<strong>PDF</strong> text is extracted automatically (image-only PDFs need OCR elsewhere).</p>",
         unsafe_allow_html=True,
     )
 
-    uploaded = st.file_uploader(
-        "Choose one or more files",
-        type=["txt", "md", "csv", "json", "pdf"],
-        accept_multiple_files=True,
-        help="Text: UTF-8. PDF: text is extracted with pypdf (scanned-only PDFs may fail).",
-    )
-    if uploaded:
-        if st.button("Process uploads", type="primary"):
-            for f in uploaded:
+    # Form + submit keeps file_uploader values on the same run as the click (plain st.button often drops files).
+    with st.form("ingest_uploads", clear_on_submit=False):
+        uploaded = st.file_uploader(
+            "Choose one or more files",
+            type=["txt", "md", "csv", "json", "pdf"],
+            accept_multiple_files=True,
+            help="Text: UTF-8. PDF: text is extracted with pypdf (scanned-only PDFs may fail).",
+            key="upload_page_uploader",
+        )
+        submitted = st.form_submit_button("Process uploads", type="primary")
+
+    names = [f.name for f in uploaded] if uploaded else []
+    upload_debug = {
+        "submitted": submitted,
+        "submitted_repr": repr(submitted),
+        "uploaded_is_none": uploaded is None,
+        "uploaded_py_type": type(uploaded).__name__,
+        "file_count": len(names),
+        "names": names,
+    }
+    _LOG.info("upload_page: %s", upload_debug)
+
+    with st.expander("Upload debug (copy this if uploads fail)", expanded=False):
+        st.code(str(upload_debug), language="text")
+        st.caption(
+            f"Full log: `{APP_LOG_FILE}` — or copy lines from the terminal where `streamlit run` is running."
+        )
+
+    if submitted:
+        batch = list(uploaded) if uploaded else []
+        _LOG.info(
+            "upload_submit: batch_len=%s names=%s",
+            len(batch),
+            [f.name for f in batch],
+        )
+        if not batch:
+            _LOG.warning("upload_submit with no files — picker empty on submit run")
+            st.warning("Choose one or more files first, then click **Process uploads**.")
+        else:
+            for f in batch:
                 try:
                     data = f.getvalue()
+                    _LOG.info("ingest_bytes start name=%r size_bytes=%s", f.name, len(data))
                     with st.spinner(f"Processing **{f.name}**…"):
                         ingest_bytes(f.name, data)
+                    _LOG.info("ingest_bytes ok name=%r", f.name)
                     st.success(f"Indexed: **{f.name}**")
                 except Exception as e:
+                    _LOG.exception("ingest_bytes failed name=%r", f.name)
                     st.error(f"{f.name}: {e}")
             st.rerun()
 
 elif page == "Search catalog":
     st.markdown('<p class="main-header">Search catalog</p>', unsafe_allow_html=True)
     st.markdown(
-        '<p class="subtle">Semantic search over **summaries** (doc-level vectors).</p>',
+        '<p class="subtle">Semantic search over **summaries** in Milvus (doc-level vectors).</p>',
         unsafe_allow_html=True,
     )
 
@@ -222,7 +291,7 @@ elif page == "Search catalog":
         with st.spinner("Searching…"):
             hits = search_catalog(q.strip(), k=k)
         if not hits:
-            st.warning("No results. Upload documents first or check `catalog_store/`.")
+            st.warning("No results. Upload documents first, ensure Milvus is running, and check `MILVUS_URI`.")
         else:
             session = SessionLocal()
             try:
@@ -246,7 +315,7 @@ elif page == "Agent flow":
     )
     try:
         png_bytes, mermaid_src = _cached_agent_flow()
-        st.image(BytesIO(png_bytes), caption="LangGraph · route (summary FAISS) → retrieve → synthesize")
+        st.image(BytesIO(png_bytes), caption="LangGraph · route (summary Milvus) → retrieve → synthesize")
         with st.expander("Mermaid source"):
             st.code(mermaid_src, language="text")
         st.download_button(

@@ -30,9 +30,19 @@ dist/
 build/
 *.egg-info/
 
-# Generated indexes (created on document upload)
-vector_stores/
-
-# Uploads and doc-level FAISS catalog
+# Uploads
 uploads/
+
+# Streamlit / app debug logs
+data/logs/
+
+# Milvus / etcd local volumes (docker-compose.yml default path)
+volumes/
+
+# Local Milvus test DBs
+milvus*.db
+_test_milvus.db
+
+# Legacy FAISS paths (optional env); not used with Milvus
 catalog_store/
+vector_stores/

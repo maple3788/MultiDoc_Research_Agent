@@ -1,25 +1,12 @@
-"""Discover chunk-level FAISS indexes under ``vector_stores/`` (for debugging / UI helpers)."""
+"""Discover document ids that have chunk rows in Milvus (for routing / UI helpers)."""
 
 from __future__ import annotations
 
 import uuid
 
-from config import PROJECT_ROOT
+from catalog.milvus_catalog import list_chunk_indexed_ids
 from db.models import Document
 from db.session import SessionLocal
-
-VECTOR_ROOT = PROJECT_ROOT / "vector_stores"
-
-
-def list_chunk_indexed_ids() -> list[str]:
-    """Folder names under ``vector_stores/`` that contain ``index.faiss``."""
-    if not VECTOR_ROOT.is_dir():
-        return []
-    return sorted(
-        p.name
-        for p in VECTOR_ROOT.iterdir()
-        if p.is_dir() and (p / "index.faiss").is_file()
-    )
 
 
 def planner_doc_catalog_text() -> str:

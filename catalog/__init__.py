@@ -1,11 +1,8 @@
-from catalog.ivf_pq_faiss import rebuild_catalog_from_rows, search_catalog
-from catalog.pipeline import delete_document, ingest_bytes, ingest_file, list_all_documents
+"""Catalog package: Milvus vectors + upload pipeline (import submodules explicitly to avoid cycles)."""
+
+from catalog.milvus_catalog import rebuild_catalog_from_rows, search_catalog
 
 __all__ = [
-    "delete_document",
-    "ingest_bytes",
-    "ingest_file",
-    "list_all_documents",
     "rebuild_catalog_from_rows",
     "search_catalog",
 ]

@@ -1,3 +1,8 @@
+# Postgres + **one MinIO** (app uploads + Milvus object storage) + Milvus (etcd + standalone).
+# From the project directory: `docker compose up -d`
+# App `.env`: MINIO_ENDPOINT must match published ports (default localhost:9000).
+# If 9000 is busy on the host, set MINIO_PUBLISH_PORT / MINIO_CONSOLE_PUBLISH_PORT below and use the same port in MINIO_ENDPOINT.
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -15,5 +20,71 @@ services:
       timeout: 5s
       retries: 5
 
+  # Single MinIO: boto3 uploads (optional) + Milvus internal segments (separate buckets / prefixes).
+  minio:
+    image: minio/minio:RELEASE.2023-03-20T20-16-18Z
+    container_name: multidoc-minio
+    environment:
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
+    ports:
+      - "${MINIO_PUBLISH_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PUBLISH_PORT:-9001}:9001"
+    volumes:
+      - minio_data:/minio_data
+    command: minio server /minio_data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  etcd:
+    container_name: milvus-etcd
+    image: quay.io/coreos/etcd:v3.5.18
+    environment:
+      - ETCD_AUTO_COMPACTION_MODE=revision
+      - ETCD_AUTO_COMPACTION_RETENTION=1000
+      - ETCD_QUOTA_BACKEND_BYTES=4294967296
+      - ETCD_SNAPSHOT_COUNT=50000
+    volumes:
+      - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/etcd:/etcd
+    command: etcd -advertise-client-urls=http://127.0.0.1:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  standalone:
+    container_name: milvus-standalone
+    # Keep in sync with pymilvus 2.6.x (requirements.txt). v2.4 images + pymilvus 2.6 often breaks gRPC.
+    image: milvusdb/milvus:v2.6.11
+    command: ["milvus", "run", "standalone"]
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+      MINIO_ACCESS_KEY_ID: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_ACCESS_KEY: ${MINIO_SECRET_KEY:-minioadmin}
+    volumes:
+      - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/milvus:/var/lib/milvus
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 30s
+      start_period: 90s
+      timeout: 20s
+      retries: 3
+    ports:
+      - "19530:19530"
+      - "9091:9091"
+    depends_on:
+      etcd:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
 volumes:
   pgdata:
+  minio_data:

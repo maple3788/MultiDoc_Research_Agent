@@ -1,22 +1,16 @@
 """
-Build per-document chunk FAISS indexes under ``vector_stores/<doc_id>/``.
+Build per-document **chunk vectors** in Milvus (``MILVUS_COLLECTION_CHUNKS``).
 
-Used by ``catalog.pipeline`` after each upload. Embeddings must stay consistent with
-``agent.llm.get_embeddings()`` (same Ollama model as at query time).
+Embeddings must match ``agent.llm.get_embeddings()`` (same provider at query time).
 """
 
 from __future__ import annotations
 
-from pathlib import Path
-
-from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from agent.llm import get_embeddings
-
-PROJECT_ROOT = Path(__file__).resolve().parent
-VECTOR_ROOT = PROJECT_ROOT / "vector_stores"
+from catalog.milvus_catalog import replace_document_chunks, reset_milvus_client
 
 
 def _chunk_text(text: str, source_id: str) -> list[Document]:
@@ -29,15 +23,16 @@ def _chunk_text(text: str, source_id: str) -> list[Document]:
     return [Document(page_content=c, metadata={"source": source_id}) for c in chunks]
 
 
-def build_faiss_for_doc(doc_id: str, text: str, embeddings) -> None:
-    docs = _chunk_text(text, doc_id)
-    store = FAISS.from_documents(docs, embeddings)
-    out = VECTOR_ROOT / doc_id
-    out.mkdir(parents=True, exist_ok=True)
-    store.save_local(str(out))
-
-
 def build_chunk_index_for_text(doc_id: str, text: str) -> None:
-    """Chunk ``text``, embed, and save ``vector_stores/<doc_id>/``."""
-    embeddings = get_embeddings()
-    build_faiss_for_doc(doc_id, text, embeddings)
+    """Chunk ``text``, embed, and upsert vectors for ``doc_id`` in Milvus."""
+    docs = _chunk_text(text, doc_id)
+    if not docs:
+        reset_milvus_client()
+        replace_document_chunks(doc_id, [], [])
+        return
+    texts = [d.page_content for d in docs]
+    emb = get_embeddings()
+    vectors = emb.embed_documents(texts)
+    # Reconnect after (possibly long) embedding so we do not reuse a stale Milvus client.
+    reset_milvus_client()
+    replace_document_chunks(doc_id, texts, vectors)

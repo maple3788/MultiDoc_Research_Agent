@@ -1,20 +1,20 @@
 """
-Route user queries to document ids using the **summary-level FAISS** catalog (``catalog_store/``).
+Route user queries to document ids using **Milvus** summary vectors (``MILVUS_COLLECTION_CATALOG``).
 
 Flow: embed query → nearest neighbors on document summaries → keep ids that also have chunk
-indexes under ``vector_stores/<id>/``.
+rows in ``MILVUS_COLLECTION_CHUNKS``.
 
 **Relevance:** weak matches are dropped: (1) if the best hit is still too far (optional absolute
 ceiling on the best L2), the route returns nothing; (2) only documents within an **L2 margin** of the
 best hit are kept, so irrelevant runner-ups are excluded even when ``TOP_K`` is large.
 
-**Note:** Summaries come from PostgreSQL and are rebuilt into ``catalog_store/`` on each upload.
+**Note:** Summaries come from PostgreSQL and are rebuilt into Milvus on each upload.
 """
 
 from __future__ import annotations
 
 from agent.doc_index import list_chunk_indexed_ids
-from catalog.ivf_pq_faiss import search_catalog
+from catalog.milvus_catalog import search_catalog
 from config import (
     CATALOG_ROUTE_L2_MARGIN,
     CATALOG_ROUTE_MAX_BEST_L2,

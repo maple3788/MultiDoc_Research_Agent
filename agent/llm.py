@@ -3,14 +3,19 @@ LLM and embedding model factories.
 
 - **Chat:** ``LLM_PROVIDER=ollama`` (default), ``gemini``, or ``zai`` (GLM via ``zai-sdk``).
   Gemini: ``GOOGLE_API_KEY`` / ``GEMINI_API_KEY``. Z.ai: ``ZAI_API_KEY`` (see ``.env.example``).
-- **Embeddings:** Ollama only (must match vectors in ``catalog_store/`` and ``vector_stores/``).
+- **Embeddings:** ``EMBEDDING_PROVIDER=ollama`` (default) or ``nvidia`` (NVIDIA API / NeMo Retriever–compatible
+  models via ``langchain-nvidia-ai-endpoints``). Vectors live in **Milvus**; keep the same provider/model for ingest and query.
 """
 
 from __future__ import annotations
 
 import os
+
+from langchain_core.embeddings import Embeddings
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_ollama import ChatOllama, OllamaEmbeddings
+
+from config import EMBEDDING_PROVIDER, NVIDIA_EMBEDDING_MODEL
 
 
 def _ollama_base_url(explicit: str | None) -> str | None:
@@ -103,8 +108,26 @@ def get_embeddings(
     model: str | None = None,
     *,
     base_url: str | None = None,
-) -> OllamaEmbeddings:
-    """Embeddings for FAISS ingest and retrieval (must stay consistent across rebuilds)."""
+) -> Embeddings:
+    """Embeddings for Milvus ingest and retrieval (must stay consistent across rebuilds)."""
+    prov = EMBEDDING_PROVIDER
+    if prov in ("nvidia", "nemo", "nemoretriever"):
+        try:
+            from langchain_nvidia_ai_endpoints import NVIDIAEmbeddings
+        except ImportError as e:
+            raise ImportError(
+                "NVIDIA embeddings require: pip install langchain-nvidia-ai-endpoints"
+            ) from e
+        key = os.environ.get("NVIDIA_API_KEY")
+        if not key:
+            raise ValueError(
+                "Set NVIDIA_API_KEY when EMBEDDING_PROVIDER=nvidia (NeMo Retriever–compatible embedding API)."
+            )
+        return NVIDIAEmbeddings(
+            model=model or NVIDIA_EMBEDDING_MODEL,
+            nvidia_api_key=key,
+        )
+
     kwargs: dict = {"model": model or os.environ.get("OLLAMA_EMBED_MODEL", "nomic-embed-text")}
     bu = _ollama_base_url(base_url)
     if bu:
